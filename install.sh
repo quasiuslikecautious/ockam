@@ -15,7 +15,7 @@ set -e
 # Or
 #
 # To install a specific version:
-# curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/build-trust/ockam/develop/install.sh | sh -s -- v0.74.0
+# curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/build-trust/ockam/develop/install.sh | sh -s --version v0.74.0
 
 # It borrows ideas from the MIT Licensed rustup-init script which has
 # been used and tested in many environments over many years
@@ -93,6 +93,17 @@ required() {
   fi
 }
 
+display_usage() {
+    echo "ockam/develop/install.sh - attempt to install the ockam binary"
+    echo " "
+    echo "Usage: install.sh [OPTION]..."
+    echo "    -h, --help                show brief help"
+    echo "    -p, --install-path PATH   specify the location for installation"
+    echo "                              (default path is ~/.ockam)"
+    echo "    -v, --version VERSION     specify the version to install"
+    echo "        --no-modify-path      do not add ockam to the PATH"
+}
+
 detect_binary_file_name() {
   info "Detecting Operating System and Architecture ..."
 
@@ -155,38 +166,181 @@ download() {
   fi
 
   info "Downloading $_url"
-  curl --proto '=https' --tlsv1.2 --location --silent --fail --show-error --output "ockam" "$_url"
-  info "Downloaded ockam command in the current directory $(pwd)"
+  curl --proto '=https' --tlsv1.2 --location --silent --fail --show-error --output "$install_path/bin/ockam" "$_url"
+  info "Downloaded ockam binary at the specified directory: $install_path"
 
   info "Granting permission to execute: chmod u+x ockam"
-  chmod u+x ockam
+  chmod u+x "$install_path/bin/ockam"
 }
 
-main() {
+create_bin() {
+  info "Creating binary directory at specified install path"
+  if [[ -f "$install_path" ]]; then
+    error "$install_path already exists but is not a directory"
+    exit 1
+  fi
+
+  if [[ -f "$install_path/bin" ]]; then
+    error "$install_path/bin already exists but is not a directory"
+    exit 1
+  fi
+
+  mkdir -p "$install_path/bin"
+  info "Binary directory successfully created"
+}
+
+write_env_files() {
+  info "Setting up env script"
+
+  local _ockam_env="$install_path/env"
+  if [[ -d "$_ockam_env" ]]; then
+    error "$_ockam_env already exists but is not a file"
+    exit 1
+  fi
+
+  local _ockam_bin="$install_path/bin"
+  
+  if [[ ! -d $_ockam_bin ]]; then
+    error "Failed to find binary directory at: $_ockam_bin"
+    exit 1
+  fi
+
+  # only write script if it doesn't exist
+  if [[ ! -f "$_ockam_env" ]]; then
+    echo "
+# Add ockam bin to PATH
+case ":\$PATH:" in
+*:"$_ockam_bin":*)
+    ;;
+*)
+    export PATH="\$PATH:$_ockam_bin"
+    ;;
+esac" >> "$_ockam_env"
+    info "env script was successfully written"
+  else
+    info "env script already exists, skipping"
+  fi
+}
+
+add_to_path() {
+  info "Adding Ockam to PATH"
+  local _ockam_env="$install_path/env"
+  local _source_cmd=". \"$_ockam_env\""
+
+  local _rcfiles=('.profile' '.bash_profile' '.bash_login' '.bashrc' '.zshenv')
+
+  info "Sourcing env script into rcfiles"
+  for rcfile in ${_rcfiles[@]}; do
+    if [[ ! -f "$_ockam_env" ]]; then
+      error "env script missing, expected script at $_ockam_env"
+      exit 1
+    fi
+
+    local _rcpath="$HOME/$rcfile"
+
+    if [[ ! -f "$_rcpath" ]]; then
+      continue
+    fi
+
+    local _contents=`cat "$_rcpath"`
+    if [[ "$_contents" == *"$_source_cmd"* ]]; then
+      break
+    fi
+
+    info "Adding source command to $_rcpath"
+    echo "$_source_cmd" >> "$_rcpath"
+  done
+}
+
+main() { 
+  local _version=""
+  install_path="$HOME/.ockam"
+  local _modify_path="true"
+
+  while test "$#" -gt 0; do
+    case "$1" in
+      -h|--help)
+        shift
+        display_usage
+        exit 0
+        ;;
+  
+      -p|--install-path)
+        shift
+        if test $# -gt 0; then
+          install_path="$1"
+        else
+          display_usage
+          exit 1
+        fi
+        shift
+        ;;
+  
+      -v|--version)
+        shift
+        if test $# -gt 0; then
+          _version="$1"
+        else
+          display_usage
+          exit 1
+        fi
+        shift
+        ;;
+      
+      --no-modify-path)
+        shift
+        _modify_path="false"
+        ;;
+  
+      *)
+        echo "Invalid: $1 -n-"
+        shift
+        ;;
+    esac
+  done
+
   echo
   info "Installing Ockam Command ..."
 
-  local _version="$1"
 
   detect_binary_file_name
   local _binary_file_name="$return_value"
 
+  create_bin
   download "$_binary_file_name" "$_version"
+
+  write_env_files 
+  
+  if [[ "$_modify_path" == "true" ]]; then
+    add_to_path
+  fi
+
+  echo "$_modify_path"
 
   echo
   heading "GET STARTED:"
-  echo "        Ockam Command is ready to be executed in the current directory."
-  echo
-  echo "        You can execute it by running:"
-  echo "          ./ockam"
-  echo
-  echo "        If you wish to run it from anywhere on your machine ..."
-  echo
-  echo "        Please copy it to a directory that is in your \$PATH, for example:"
-  echo "          mv ockam /usr/local/bin"
-  echo
-  echo "        After that, you should be able to execute it anywhere by simply typing:"
-  echo "          ockam"
+  
+  if [[ "$_modify_path" == "false" ]]; then
+    echo "        Ockam Command is ready to be executed in the $install_path directory."
+    echo
+    echo "        You can execute it by running:"
+    echo "          $install_path/bin/ockam"
+    echo
+    echo "        If you wish to run it from anywhere on your machine ..."
+    echo
+    echo "        Please copy it to a directory that is in your \$PATH, for example:"
+    echo "          mv ockam /usr/local/bin"
+    echo
+    echo "        After that, you should be able to execute it anywhere by simply typing:"
+    echo "          ockam"
+  else
+    echo "        Ockam Command will be ready to be executed on terminal restart"
+    echo "        and has been installed at"
+    echo "          $install_path"
+    echo
+    echo "        You can execute it by simply typing the following in any directory:"
+    echo "          ockam"
+  fi
   echo
   heading "LEARN MORE:"
   echo "        Learn more at https://docs.ockam.io"
@@ -199,4 +353,4 @@ main() {
   exit 0
 }
 
-main "$1"
+main "$@"
